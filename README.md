@@ -1,0 +1,1 @@
+# sharp_aquos_507sh_opensource
