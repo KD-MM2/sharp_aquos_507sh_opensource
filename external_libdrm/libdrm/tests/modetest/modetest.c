@@ -53,8 +53,11 @@
 #include <string.h>
 #include <strings.h>
 #include <errno.h>
-#include <sys/poll.h>
+#include <poll.h>
 #include <sys/time.h>
+#ifdef HAVE_SYS_SELECT_H
+#include <sys/select.h>
+#endif
 
 #include "xf86drm.h"
 #include "xf86drmMode.h"
@@ -195,7 +198,7 @@ static void dump_encoders(struct device *dev)
 
 static void dump_mode(drmModeModeInfo *mode)
 {
-	printf("  %s %d %d %d %d %d %d %d %d %d",
+	printf("  %s %d %d %d %d %d %d %d %d %d %d",
 	       mode->name,
 	       mode->vrefresh,
 	       mode->hdisplay,
@@ -205,7 +208,8 @@ static void dump_mode(drmModeModeInfo *mode)
 	       mode->vdisplay,
 	       mode->vsync_start,
 	       mode->vsync_end,
-	       mode->vtotal);
+	       mode->vtotal,
+	       mode->clock);
 
 	printf(" flags: ");
 	mode_flag_str(mode->flags);
@@ -323,6 +327,8 @@ static void dump_prop(struct device *dev, drmModePropertyPtr prop,
 	printf("\t\tvalue:");
 	if (drm_property_type_is(prop, DRM_MODE_PROP_BLOB))
 		dump_blob(dev, value);
+	else if (drm_property_type_is(prop, DRM_MODE_PROP_SIGNED_RANGE))
+		printf(" %"PRId64"\n", value);
 	else
 		printf(" %"PRIu64"\n", value);
 }
@@ -712,6 +718,7 @@ struct pipe_arg {
 };
 
 struct plane_arg {
+	uint32_t plane_id;  /* the id of plane to use */
 	uint32_t crtc_id;  /* the id of CRTC to bind to */
 	bool has_position;
 	int32_t x, y;
@@ -1275,7 +1282,7 @@ static int set_plane(struct device *dev, struct plane_arg *p,
 {
 	drmModePlane *ovr;
 	uint32_t handles[4] = {0}, pitches[4] = {0}, offsets[4] = {0};
-	uint32_t plane_id = 0;
+	uint32_t plane_id;
 	struct bo *plane_bo;
 	uint32_t plane_flags = 0;
 	int crtc_x, crtc_y, crtc_w, crtc_h;
@@ -1721,6 +1728,11 @@ static int parse_plane(struct plane_arg *plane, const char *p)
 {
 	char *end;
 
+	plane->plane_id = strtoul(p, &end, 10);
+	if (*end != '@')
+		return -EINVAL;
+
+	p = end + 1;
 	plane->crtc_id = strtoul(p, &end, 10);
 	if (*end != ':')
 		return -EINVAL;
@@ -1792,7 +1804,7 @@ static void usage(char *name)
 	fprintf(stderr, "\t-p\tlist CRTCs and planes (pipes)\n");
 
 	fprintf(stderr, "\n Test options:\n\n");
-	fprintf(stderr, "\t-P <crtc_id>:<w>x<h>[+<x>+<y>][*<scale>][@<format>]\tset a plane\n");
+	fprintf(stderr, "\t-P <plane_id>@<crtc_id>:<w>x<h>[+<x>+<y>][*<scale>][@<format>]\tset a plane\n");
 	fprintf(stderr, "\t-s <connector_id>[,<connector_id>][@<crtc_id>]:<mode>[-<vrefresh>][@<format>]\tset a mode\n");
 	fprintf(stderr, "\t-C\ttest hw cursor\n");
 	fprintf(stderr, "\t-v\ttest vsynced page flipping\n");
@@ -1977,7 +1989,7 @@ int main(int argc, char **argv)
 	if (!args)
 		encoders = connectors = crtcs = planes = framebuffers = 1;
 
-	dev.fd = util_open(module, device);
+	dev.fd = util_open(device, module);
 	if (dev.fd < 0)
 		return -1;
 
